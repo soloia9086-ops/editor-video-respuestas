@@ -7,7 +7,10 @@ function bundleFfmpegCore() {
   return {
     name: 'bundle-ffmpeg-core',
     buildStart() {
-      const source = resolve('node_modules/@ffmpeg/core/dist/umd');
+      // @ffmpeg/ffmpeg crea un Worker de tipo módulo. Por eso debemos
+      // publicar el núcleo ESM: el núcleo UMD no expone `default` y Safari
+      // termina mostrando "failed to import ffmpeg-core.js".
+      const source = resolve('node_modules/@ffmpeg/core/dist/esm');
       const destination = resolve('public/ffmpeg');
       mkdirSync(destination, { recursive: true });
       cpSync(resolve(source, 'ffmpeg-core.js'), resolve(destination, 'ffmpeg-core.js'));
