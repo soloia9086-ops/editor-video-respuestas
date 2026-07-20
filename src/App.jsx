@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { fetchFile } from '@ffmpeg/util';
 import {
   AlertTriangle, ArrowDown, ArrowUp, BarChart3, Check, ChevronRight,
   Download, Film, GripVertical, LoaderCircle, Pause, Play, Plus,
@@ -180,10 +180,9 @@ function App() {
   async function ensureFfmpeg() {
     if (ffmpegReady) return;
     setStatus('Preparando el motor de vídeo por primera vez…');
-    const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd';
     await ffmpeg.load({
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm')
+      coreURL: '/ffmpeg/ffmpeg-core.js',
+      wasmURL: '/ffmpeg/ffmpeg-core.wasm'
     });
     setFfmpegReady(true);
   }
