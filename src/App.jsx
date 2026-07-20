@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { fetchFile } from '@ffmpeg/util';
 import {
   AlertTriangle, ArrowDown, ArrowUp, BarChart3, Check, ChevronRight,
   Download, Film, GripVertical, LoaderCircle, Pause, Play, Plus,
@@ -187,9 +187,10 @@ function App() {
     if (ffmpegReady) return;
     exportStageRef.current = 'carga del motor FFmpeg';
     setStatus('Preparando el motor de vídeo por primera vez…');
+    const ffmpegBase = `${window.location.origin}/ffmpeg`;
     await ffmpeg.load({
-      coreURL: await toBlobURL('/ffmpeg/ffmpeg-core.js', 'text/javascript'),
-      wasmURL: await toBlobURL('/ffmpeg/ffmpeg-core.wasm', 'application/wasm')
+      coreURL: `${ffmpegBase}/ffmpeg-core.js`,
+      wasmURL: `${ffmpegBase}/ffmpeg-core.wasm`
     });
     setFfmpegReady(true);
   }
