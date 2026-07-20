@@ -67,7 +67,7 @@ function App() {
   const [exportError, setExportError] = useState('');
   const [outputFormat, setOutputFormat] = useState('youtube');
   const [transcript, setTranscript] = useState('');
-  const [scriptStyle, setScriptStyle] = useState('informativo');
+  const [scriptStyle, setScriptStyle] = useState('youtube');
   const [speechDuration, setSpeechDuration] = useState(20);
   const [generatedScript, setGeneratedScript] = useState('');
   const exportStageRef = useRef('inicio');
@@ -251,42 +251,67 @@ function App() {
     const selected = distinct.slice(0, blockCount).sort((a, b) => a.index - b.index);
     if (selected.length < 2) return setToast('La voz no se ha entendido con suficiente claridad. Prueba con un vídeo con menos ruido.');
 
-    const openings = {
-      informativo: 'He revisado este vídeo y estos son los puntos principales que merece la pena comentar.',
-      critico: 'He escuchado con atención este vídeo y hay varias ideas que conviene analizar con calma.',
-      sencillo: 'Voy a resumirte de forma sencilla lo más importante de este vídeo.',
-      contundente: 'Después de ver este vídeo, hay varios puntos que no deberían pasar desapercibidos.',
-      divertido: 'He visto el vídeo completo y hay varias partes que merece la pena comentar.'
+    const hooks = {
+      youtube: 'A ver, espera, porque hay una parte de este vídeo que tenemos que comentar.',
+      rapido: 'Espera. Escucha esto porque tiene bastante tela.',
+      critico: 'No puedo dejar pasar lo que se acaba de decir en este vídeo.',
+      divertido: 'A ver, parad un momento, porque esto se comenta solo.',
+      educativo: 'Fíjate bien en este fragmento, porque hay algo importante que explicar.'
     };
-    const introductions = {
-      informativo: ['El primer asunto importante aparece cuando se explica que', 'Más adelante también se señala que', 'Otro punto que aporta contexto es que', 'Finalmente, el vídeo sostiene que'],
-      critico: ['El primer punto que quiero revisar es la afirmación de que', 'También conviene detenerse cuando se dice que', 'Otro aspecto que necesita contexto es que', 'La última idea que debemos analizar es que'],
-      sencillo: ['La primera idea importante es que', 'Después se explica que', 'También debemos tener en cuenta que', 'Por último, se comenta que'],
-      contundente: ['Lo primero que debemos señalar es que', 'El segundo punto que llama la atención es que', 'También resulta importante que', 'Y hay una última afirmación:'],
-      divertido: ['La primera parte que me llama la atención es que', 'Pero después aparece otra idea: que', 'La cosa continúa cuando se explica que', 'Y para terminar, se comenta que']
+    const leadIns = {
+      youtube: ['Primero, escucha esto.', 'Ahora mira lo que dice después.', 'Y atención a esta otra parte.', 'Pero todavía queda esto.'],
+      rapido: ['Mira esto.', 'Y ahora escucha.', 'Pero espera, que sigue.', 'Atención a esto.'],
+      critico: ['Empecemos por esta afirmación.', 'Ahora viene otro punto importante.', 'Aquí aparece otra afirmación discutible.', 'Y esto tampoco puede pasar desapercibido.'],
+      divertido: ['Empezamos fuerte.', 'Pero espera, porque hay más.', 'Y aquí la cosa mejora.', 'Para rematar, escucha esto.'],
+      educativo: ['Vamos con el primer punto.', 'El siguiente fragmento añade otra idea.', 'Ahora debemos fijarnos en esto.', 'Y terminamos con este punto.']
     };
     const reactions = {
-      informativo: ['Este punto ayuda a entender el tema, aunque conviene comprobar el contexto completo.', 'Es un dato relevante y merece compararse con otras fuentes.', 'Aquí está una de las claves para interpretar correctamente el vídeo.', 'Esta afirmación resume buena parte del mensaje principal.'],
-      critico: ['Mi opinión es que esta afirmación necesita datos y contexto antes de aceptarla.', 'Aquí no basta con afirmarlo: también sería necesario explicar en qué pruebas se apoya.', 'Este punto puede ser razonable, pero el vídeo debería desarrollarlo mejor.', 'Por eso conviene separar la opinión de los hechos comprobables.'],
-      sencillo: ['Dicho de otra forma, esta es una de las ideas centrales del vídeo.', 'Lo importante aquí es entender el contexto y no quedarse solo con una frase.', 'Este punto se entiende mejor si lo relacionamos con el resto del vídeo.', 'Esa es la idea principal que yo destacaría.'],
-      contundente: ['Mi valoración es clara: una afirmación así debe estar respaldada por hechos.', 'No deberíamos dar este punto por cierto sin conocer todos los datos.', 'Aquí es donde debemos prestar especial atención y pedir una explicación completa.', 'Esta afirmación merece una comprobación antes de compartirla como cierta.'],
-      divertido: ['Dicho así llama mucho la atención, aunque conviene mirar el contexto completo.', 'Aquí es donde el vídeo empieza a ponerse realmente interesante.', 'Es una buena frase para detenernos y pensar qué significa en realidad.', 'Y este punto deja bastante espacio para el debate.']
+      youtube: [
+        '¿Lo habéis escuchado? Lo dice con total seguridad, pero aquí falta explicar bastante más. Yo no me quedaría solamente con esa frase.',
+        'A mí esto no me termina de cuadrar. Está presentando la idea como si fuera evidente, cuando necesitamos conocer todo el contexto.',
+        'Este es justo el punto en el que yo me detendría. Antes de creerlo o compartirlo, habría que comprobar de dónde sale.',
+        'Y aquí está el problema: una frase puede sonar convincente, pero eso no significa que toda la explicación sea correcta.'
+      ],
+      rapido: [
+        '¿Perdona? Lo suelta así y se queda tan tranquilo. Pero, ¿dónde está la explicación?',
+        '¿Veis lo que acaba de hacer? Ha dado la conclusión sin enseñarnos cómo ha llegado hasta ella.',
+        'Pues yo aquí necesito más contexto. Una frase rápida no demuestra nada.',
+        'Esto suena muy bien para un vídeo, pero falta comprobar si realmente es así.'
+      ],
+      critico: [
+        'Esta afirmación necesita pruebas. Decirlo con seguridad no hace que sea automáticamente cierto.',
+        'Aquí se está dejando fuera una parte importante del contexto y eso puede cambiar completamente la interpretación.',
+        'No podemos aceptar esta conclusión sin saber qué datos la respaldan. Ese es el punto que el vídeo debería aclarar.',
+        'Mi valoración es clara: antes de compartir esta idea como un hecho, hay que contrastarla.'
+      ],
+      divertido: [
+        '¿Lo habéis oído? Confianza no le falta, desde luego. La explicación ya si eso la dejamos para otro día.',
+        'Aquí el vídeo ha decidido pasar del contexto directamente a la conclusión. Más rápido, imposible.',
+        'Yo también quiero esa seguridad para decir las cosas, pero necesitaríamos alguna prueba más.',
+        'Suena espectacular, sí. Ahora solo falta la pequeña parte de demostrarlo.'
+      ],
+      educativo: [
+        'Lo importante aquí es separar la afirmación de las pruebas. Primero debemos saber qué información la respalda.',
+        'Este fragmento puede entenderse de varias maneras. Por eso es importante revisar lo que ocurrió antes y después.',
+        'Aquí conviene distinguir entre una opinión personal y un hecho que pueda comprobarse.',
+        'La idea principal es interesante, pero debemos compararla con otras fuentes antes de sacar una conclusión.'
+      ]
     };
     const closings = {
-      informativo: 'En resumen, estas son las ideas principales que presenta el vídeo. Lo más útil es contrastarlas, revisar el contexto y sacar una conclusión propia.',
-      critico: 'Mi conclusión es que el vídeo plantea asuntos interesantes, pero varias afirmaciones necesitan más contexto y pruebas. Esta es mi valoración; ahora me interesa conocer la tuya.',
-      sencillo: 'En resumen, el vídeo presenta varias ideas importantes. Yo me quedaría con estos puntos y comprobaría la información antes de sacar una conclusión.',
-      contundente: 'En conclusión, no debemos aceptar una afirmación solamente porque aparezca en un vídeo. Hay que revisar los hechos, comparar fuentes y después formar una opinión.',
-      divertido: 'Y hasta aquí mi repaso del vídeo. Hay ideas interesantes, otras discutibles y bastante material para conversar. ¿Tú qué opinas?'
+      youtube: 'Yo lo tengo claro: este vídeo deja preguntas sin responder. Ahora quiero saber qué pensáis vosotros. Os leo en los comentarios.',
+      rapido: '¿Vosotros os lo creéis o también pensáis que falta contexto? Decídmelo en comentarios.',
+      critico: 'Esa es mi valoración. No se trata de atacar a nadie, sino de pedir pruebas y contexto. ¿Qué opináis vosotros?',
+      divertido: 'En fin, yo todavía estoy esperando la explicación. Decidme en comentarios si vosotros lo veis igual.',
+      educativo: 'En resumen: contexto, pruebas y varias fuentes antes de sacar conclusiones. ¿Qué parte analizaríais vosotros?'
     };
 
     const blocks = selected.map(({ sentence }, index) => {
       const cleanSentence = sentence.replace(/[.!?]+$/, '').replace(/^["“”]+|["“”]+$/g, '');
-      return `COMENTARIO ${index + 1}\n${introductions[scriptStyle][index % introductions[scriptStyle].length]} «${cleanSentence}». ${reactions[scriptStyle][index % reactions[scriptStyle].length]}`;
+      return `${leadIns[scriptStyle][index % leadIns[scriptStyle].length]}\n\n[INSERTAR FRAGMENTO ${index + 1}: “${cleanSentence}”]\n\nTU REACCIÓN\n${reactions[scriptStyle][index % reactions[scriptStyle].length]}`;
     });
 
-    setGeneratedScript(`INTRODUCCIÓN\n${openings[scriptStyle]}\n\n${blocks.join('\n\n')}\n\nCONCLUSIÓN\n${closings[scriptStyle]}`);
-    setToast('Guion mejorado. Puedes editarlo antes de grabarte.');
+    setGeneratedScript(`GANCHO\n${hooks[scriptStyle]}\n\n${blocks.join('\n\n')}\n\nCIERRE\n${closings[scriptStyle]}`);
+    setToast('Guion de reacción creado. Puedes editarlo antes de grabarte.');
   }
 
   async function createAutomaticTranscript() {
@@ -675,7 +700,7 @@ function App() {
 
           {!!timeline.length && <section className="export-options">
             <div className="option-block"><h3>Formato final</h3><p>Elige dónde vas a publicar el vídeo.</p><div className="format-grid">{Object.entries(OUTPUT_FORMATS).map(([key, format]) => <button key={key} className={outputFormat === key ? 'selected' : ''} onClick={() => setOutputFormat(key)}><strong>{format.label}</strong><small>{format.detail}</small></button>)}</div></div>
-            <div className="option-block script-block"><div className="script-heading"><div><h3>Crear mi guion</h3><p>La aplicación escucha el vídeo y obtiene automáticamente lo que se dice, sin API.</p></div><span>Automático</span></div><button className="secondary-button full transcribe-button" onClick={createAutomaticTranscript} disabled={working}><AudioLines size={17}/> {transcript ? 'Volver a crear la transcripción' : 'Crear transcripción automática'}</button><p className="model-note">La primera vez descargará el modelo local y puede tardar unos minutos.</p>{transcript && <><label className="transcript-label">Transcripción obtenida automáticamente</label><textarea className="transcript-input" value={transcript} onChange={(e) => setTranscript(e.target.value)}/><div className="script-controls"><label>Estilo<select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)}><option value="informativo">Informativo</option><option value="critico">Crítico</option><option value="sencillo">Explicación sencilla</option><option value="contundente">Contundente</option><option value="divertido">Divertido</option></select></label><label>Duración por intervención<select value={speechDuration} onChange={(e) => setSpeechDuration(Number(e.target.value))}><option value="10">10 segundos</option><option value="20">20 segundos</option><option value="30">30 segundos</option></select></label><button className="primary-button" onClick={createReadingScript}><WandSparkles size={16}/> Crear texto para leer</button></div></>}{generatedScript && <div className="generated-script"><div><strong>Texto que debes leer</strong><button className="text-button" onClick={copyReadingScript}>Copiar guion</button></div><textarea value={generatedScript} onChange={(e) => setGeneratedScript(e.target.value)}/><small>Puedes modificar cualquier frase antes de grabar tus vídeos.</small></div>}</div>
+            <div className="option-block script-block"><div className="script-heading"><div><h3>Crear mi guion</h3><p>Transcribe el vídeo y crea una reacción natural para TikTok, Reels o YouTube, sin API.</p></div><span>Automático</span></div><button className="secondary-button full transcribe-button" onClick={createAutomaticTranscript} disabled={working}><AudioLines size={17}/> {transcript ? 'Volver a crear la transcripción' : 'Crear transcripción automática'}</button><p className="model-note">La primera vez descargará el modelo local y puede tardar unos minutos.</p>{transcript && <><label className="transcript-label">Transcripción obtenida automáticamente</label><textarea className="transcript-input" value={transcript} onChange={(e) => setTranscript(e.target.value)}/><div className="script-controls"><label>Estilo<select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)}><option value="youtube">Reacción YouTube</option><option value="rapido">TikTok/Reels rápido</option><option value="critico">Crítica directa</option><option value="divertido">Reacción divertida</option><option value="educativo">Explicación educativa</option></select></label><label>Duración del guion<select value={speechDuration} onChange={(e) => setSpeechDuration(Number(e.target.value))}><option value="10">Corto</option><option value="20">Medio</option><option value="30">Largo</option></select></label><button className="primary-button" onClick={createReadingScript}><WandSparkles size={16}/> Crear texto para leer</button></div></>}{generatedScript && <div className="generated-script"><div><strong>Texto que debes leer</strong><button className="text-button" onClick={copyReadingScript}>Copiar guion</button></div><textarea value={generatedScript} onChange={(e) => setGeneratedScript(e.target.value)}/><small>Puedes modificar cualquier frase antes de grabar tus vídeos.</small></div>}</div>
           </section>}
 
           <div className="export-row"><div><h3>Exportación MP4 · {OUTPUT_FORMATS[outputFormat].label}</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
