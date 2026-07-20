@@ -9,6 +9,11 @@ import {
 import { fileExtension, formatTime, safeName, uid } from './utils';
 
 const CUT_OPTIONS = [1, 3, 5, 8, 10];
+const OUTPUT_FORMATS = {
+  youtube: { label: 'Horizontal 16:9', detail: 'YouTube', width: 1280, height: 720 },
+  vertical: { label: 'Vertical 9:16', detail: 'TikTok, Reels y Shorts', width: 720, height: 1280 },
+  square: { label: 'Cuadrado 1:1', detail: 'Redes sociales', width: 720, height: 720 }
+};
 const ffmpeg = new FFmpeg();
 
 function App() {
@@ -32,6 +37,11 @@ function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState('');
   const [exportError, setExportError] = useState('');
+  const [outputFormat, setOutputFormat] = useState('youtube');
+  const [subtitles, setSubtitles] = useState([]);
+  const [subtitleText, setSubtitleText] = useState('');
+  const [subtitleStart, setSubtitleStart] = useState(0);
+  const [subtitleEnd, setSubtitleEnd] = useState(3);
   const exportStageRef = useRef('inicio');
   const ffmpegLogsRef = useRef([]);
 
@@ -177,6 +187,19 @@ function App() {
     });
   }
 
+  function addSubtitle() {
+    const text = subtitleText.trim();
+    const start = Math.max(0, Number(subtitleStart));
+    const end = Math.min(timelineStats.total || Number(subtitleEnd), Number(subtitleEnd));
+    if (!text) return setToast('Escribe el texto del subtítulo.');
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return setToast('La salida del subtítulo debe ser posterior a la entrada.');
+    setSubtitles((items) => [...items, { id: uid(), text, start, end }].sort((a, b) => a.start - b.start));
+    setSubtitleText('');
+    setSubtitleStart(end);
+    setSubtitleEnd(Math.min(timelineStats.total || end + 3, end + 3));
+    setToast('Subtítulo añadido al montaje.');
+  }
+
   function seekTo(time) {
     if (!videoRef.current) return;
     videoRef.current.currentTime = time;
@@ -252,13 +275,7 @@ function App() {
         }
       }
 
-      if (inputNames.size === 1) {
-        const input = inputNames.get(timeline[0].fileId);
-        await exportSingleSourceBySegments(input);
-        setToast('Montaje terminado y descargado.');
-        return;
-      }
-
+      const format = OUTPUT_FORMATS[outputFormat];
       const segmentNames = [];
       for (let index = 0; index < timeline.length; index += 1) {
         const item = timeline[index];
@@ -269,7 +286,7 @@ function App() {
           '-y',
           '-ss', String(item.start), '-i', inputNames.get(item.fileId), '-t', String(item.duration),
           '-map', '0:v:0', '-map', '0:a?',
-          '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=30',
+          '-vf', `scale=${format.width}:${format.height}:force_original_aspect_ratio=decrease,pad=${format.width}:${format.height}:(ow-iw)/2:(oh-ih)/2:black,fps=30`,
           '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
           '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', segment
         ]);
@@ -279,10 +296,12 @@ function App() {
       setStatus('Uniendo todos los bloques…');
       const list = segmentNames.map((name) => `file '${name}'`).join('\n');
       await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(list));
-      const concatResult = await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4']);
+      const assembledName = subtitles.length ? 'video-sin-subtitulos.mp4' : 'video-respuesta.mp4';
+      const concatResult = await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', assembledName]);
       if (concatResult !== 0) throw new Error('No se pudieron unir los bloques del montaje.');
+      if (subtitles.length) await burnSubtitles(assembledName, format);
       const data = await ffmpeg.readFile('video-respuesta.mp4');
-      downloadBytes(data, `video-respuesta-${Date.now()}.mp4`);
+      downloadBytes(data, `video-respuesta-${outputFormat}-${Date.now()}.mp4`);
       setToast('Montaje terminado y descargado.');
     } catch (error) {
       console.error(error);
@@ -292,6 +311,68 @@ function App() {
       setExportError(detail);
       setToast('La exportación se detuvo. Consulta el detalle del error que aparece debajo.');
     } finally { setWorking(false); setStatus(''); setProgress(0); }
+  }
+
+  async function burnSubtitles(inputName, format) {
+    exportStageRef.current = 'integración de los subtítulos';
+    setStatus('Añadiendo subtítulos al vídeo…');
+    const validSubtitles = subtitles.filter((item) => item.text.trim() && item.end > item.start && item.start < timelineStats.total);
+    const subtitleFiles = [];
+    for (let index = 0; index < validSubtitles.length; index += 1) {
+      const name = `subtitle-${index}.png`;
+      subtitleFiles.push(name);
+      await ffmpeg.writeFile(name, await createSubtitlePng(validSubtitles[index].text, format.width));
+    }
+
+    const inputs = subtitleFiles.flatMap((name) => ['-i', name]);
+    let previous = '[0:v]';
+    const filters = validSubtitles.map((subtitle, index) => {
+      const output = `[subbed${index}]`;
+      const filter = `${previous}[${index + 1}:v]overlay=(W-w)/2:H-h-48:eof_action=repeat:enable='between(t,${subtitle.start},${Math.min(subtitle.end, timelineStats.total)})'${output}`;
+      previous = output;
+      return filter;
+    });
+    const result = await ffmpeg.exec([
+      '-y', '-i', inputName, ...inputs,
+      '-filter_complex', filters.join(';'), '-map', previous, '-map', '0:a?',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
+      '-c:a', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4'
+    ]);
+    if (result !== 0) throw new Error('No se pudieron integrar los subtítulos.');
+    for (const name of subtitleFiles) await ffmpeg.deleteFile(name);
+    await ffmpeg.deleteFile(inputName);
+  }
+
+  async function createSubtitlePng(text, videoWidth) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(videoWidth - 64, 1100);
+    canvas.height = 190;
+    const ctx = canvas.getContext('2d');
+    const fontSize = videoWidth <= 720 ? 34 : 42;
+    ctx.font = `700 ${fontSize}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const words = text.split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width > canvas.width - 52 && line) { lines.push(line); line = word; }
+      else line = test;
+    }
+    if (line) lines.push(line);
+    const visibleLines = lines.slice(0, 3);
+    const lineHeight = fontSize * 1.22;
+    const boxHeight = visibleLines.length * lineHeight + 28;
+    const boxY = (canvas.height - boxHeight) / 2;
+    ctx.fillStyle = 'rgba(0,0,0,.72)';
+    ctx.beginPath();
+    ctx.roundRect(8, boxY, canvas.width - 16, boxHeight, 16);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    visibleLines.forEach((value, index) => ctx.fillText(value, canvas.width / 2, boxY + 14 + lineHeight * (index + .5)));
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('No se pudo crear el subtítulo.')), 'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
   }
 
   async function exportSingleSourceTimeline(input) {
@@ -508,7 +589,12 @@ function App() {
 
           {!!timeline.length && <div className="rights-meter"><div className="meter-copy"><span><strong>Fragmentos del vídeo: {timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.original)} seleccionados</small></span><span className="own"><strong>Vídeos de avatar: {100 - timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.own)} añadidos</small></span></div><div className="meter"><span style={{ width: `${timelineStats.originalPercent}%` }}/></div>{timelineStats.own === 0 ? <p className="good"><Check size={16}/> El avatar es opcional. Puedes generar y descargar el montaje solamente con estos fragmentos.</p> : <p className="good"><Check size={16}/> El montaje incluye los vídeos de avatar que has añadido.</p>}</div>}
 
-          <div className="export-row"><div><h3>Exportación MP4 · 720p</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
+          {!!timeline.length && <section className="export-options">
+            <div className="option-block"><h3>Formato final</h3><p>Elige dónde vas a publicar el vídeo.</p><div className="format-grid">{Object.entries(OUTPUT_FORMATS).map(([key, format]) => <button key={key} className={outputFormat === key ? 'selected' : ''} onClick={() => setOutputFormat(key)}><strong>{format.label}</strong><small>{format.detail}</small></button>)}</div></div>
+            <div className="option-block"><div className="subtitle-heading"><div><h3>Subtítulos</h3><p>El tiempo se cuenta desde el inicio del montaje final.</p></div><span>{subtitles.length} añadidos</span></div><div className="subtitle-form"><label>Texto<input type="text" maxLength="140" placeholder="Escribe el subtítulo" value={subtitleText} onChange={(e) => setSubtitleText(e.target.value)}/></label><label>Entrada (s)<input type="number" min="0" step="0.1" value={subtitleStart} onChange={(e) => setSubtitleStart(e.target.value)}/></label><label>Salida (s)<input type="number" min="0.1" step="0.1" value={subtitleEnd} onChange={(e) => setSubtitleEnd(e.target.value)}/></label><button className="secondary-button" onClick={addSubtitle}><Plus size={16}/> Añadir</button></div>{!!subtitles.length && <div className="subtitle-list">{subtitles.map((item) => <div key={item.id}><span><strong>{item.text}</strong><small>{formatTime(item.start)} → {formatTime(item.end)}</small></span><button onClick={() => setSubtitles((items) => items.filter((entry) => entry.id !== item.id))}><Trash2 size={15}/></button></div>)}</div>}</div>
+          </section>}
+
+          <div className="export-row"><div><h3>Exportación MP4 · {OUTPUT_FORMATS[outputFormat].label}</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
           {exportError && <div className="export-error"><div><AlertTriangle size={18}/><strong>Detalle de la exportación</strong><button onClick={() => setExportError('')} aria-label="Cerrar"><X size={16}/></button></div><p>{exportError}</p></div>}
         </section>}
 
