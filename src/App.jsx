@@ -244,7 +244,9 @@ function App() {
       }
 
       if (inputNames.size === 1) {
-        await exportSingleSourceTimeline(inputNames.get(timeline[0].fileId));
+        const input = inputNames.get(timeline[0].fileId);
+        const optimized = await exportSingleSourceTimeline(input);
+        if (!optimized) await exportSingleSourceBySegments(input);
         setToast('Montaje terminado y descargado.');
         return;
       }
@@ -255,7 +257,7 @@ function App() {
         const segment = `segment-${index}.mp4`;
         segmentNames.push(segment);
         setStatus(`Procesando bloque ${index + 1} de ${timeline.length}…`);
-        await ffmpeg.exec([
+        const segmentResult = await ffmpeg.exec([
           '-y',
           '-ss', String(item.start), '-i', inputNames.get(item.fileId), '-t', String(item.duration),
           '-map', '0:v:0', '-map', '0:a?',
@@ -263,18 +265,20 @@ function App() {
           '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
           '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', segment
         ]);
+        if (segmentResult !== 0) throw new Error(`No se pudo procesar el bloque ${index + 1}.`);
       }
 
       setStatus('Uniendo todos los bloques…');
       const list = segmentNames.map((name) => `file '${name}'`).join('\n');
       await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(list));
-      await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4']);
+      const concatResult = await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4']);
+      if (concatResult !== 0) throw new Error('No se pudieron unir los bloques del montaje.');
       const data = await ffmpeg.readFile('video-respuesta.mp4');
       downloadBytes(data, `video-respuesta-${Date.now()}.mp4`);
       setToast('Montaje terminado y descargado.');
     } catch (error) {
       console.error(error);
-      setToast('La exportación no pudo terminar. Reduce la duración o utiliza vídeos MP4 H.264.');
+      setToast(error?.message || 'La exportación no pudo terminar con este formato de vídeo.');
     } finally { setWorking(false); setStatus(''); setProgress(0); }
   }
 
@@ -290,26 +294,51 @@ function App() {
     );
     const inputsWithAudio = timeline.map((_, index) => `[v${index}][a${index}]`).join('');
 
-    try {
-      await ffmpeg.exec([
-        '-y', '-i', input,
-        '-filter_complex', `[0:v]split=${timeline.length}${videoSplitOutputs};[0:a]asplit=${timeline.length}${audioSplitOutputs};${[...videoFilters, ...audioFilters].join(';')};${inputsWithAudio}concat=n=${timeline.length}:v=1:a=1[outv][outa]`,
-        '-map', '[outv]', '-map', '[outa]', '-c:v', 'libx264', '-preset', 'ultrafast',
-        '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', 'video-respuesta.mp4'
-      ]);
-    } catch {
-      setStatus('El vídeo no tiene una pista de audio compatible. Exportando imagen…');
-      const inputsWithoutAudio = timeline.map((_, index) => `[v${index}]`).join('');
-      await ffmpeg.exec([
-        '-y', '-i', input,
-        '-filter_complex', `[0:v]split=${timeline.length}${videoSplitOutputs};${videoFilters.join(';')};${inputsWithoutAudio}concat=n=${timeline.length}:v=1:a=0[outv]`,
-        '-map', '[outv]', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-        '-movflags', '+faststart', 'video-respuesta.mp4'
-      ]);
-    }
+    const result = await ffmpeg.exec([
+      '-y', '-i', input,
+      '-filter_complex', `[0:v]split=${timeline.length}${videoSplitOutputs};[0:a]asplit=${timeline.length}${audioSplitOutputs};${[...videoFilters, ...audioFilters].join(';')};${inputsWithAudio}concat=n=${timeline.length}:v=1:a=1[outv][outa]`,
+      '-map', '[outv]', '-map', '[outa]', '-c:v', 'libx264', '-preset', 'ultrafast',
+      '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', 'video-respuesta.mp4'
+    ]);
+
+    if (result !== 0) return false;
 
     const data = await ffmpeg.readFile('video-respuesta.mp4');
     downloadBytes(data, `video-respuesta-${Date.now()}.mp4`);
+    await ffmpeg.deleteFile('video-respuesta.mp4');
+    return true;
+  }
+
+  async function exportSingleSourceBySegments(input) {
+    setStatus('Usando el modo compatible: procesando los fragmentos uno a uno…');
+    const segmentNames = [];
+
+    for (let index = 0; index < timeline.length; index += 1) {
+      const item = timeline[index];
+      const segment = `compatible-${index}.mp4`;
+      segmentNames.push(segment);
+      setStatus(`Modo compatible: fragmento ${index + 1} de ${timeline.length}…`);
+      const result = await ffmpeg.exec([
+        '-y', '-ss', String(item.start), '-i', input, '-t', String(item.duration),
+        '-map', '0:v:0', '-map', '0:a?',
+        '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2:black,fps=25',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '24', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', segment
+      ]);
+      if (result !== 0) throw new Error(`El formato del fragmento ${index + 1} no es compatible.`);
+    }
+
+    const list = segmentNames.map((name) => `file '${name}'`).join('\n');
+    await ffmpeg.writeFile('compatible-list.txt', new TextEncoder().encode(list));
+    const concatResult = await ffmpeg.exec([
+      '-y', '-f', 'concat', '-safe', '0', '-i', 'compatible-list.txt',
+      '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4'
+    ]);
+    if (concatResult !== 0) throw new Error('No se pudieron unir los fragmentos compatibles.');
+
+    const data = await ffmpeg.readFile('video-respuesta.mp4');
+    downloadBytes(data, `video-respuesta-${Date.now()}.mp4`);
+    for (const name of segmentNames) await ffmpeg.deleteFile(name);
     await ffmpeg.deleteFile('video-respuesta.mp4');
   }
 
