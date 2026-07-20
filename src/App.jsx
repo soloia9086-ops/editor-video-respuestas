@@ -28,6 +28,7 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState('');
   const [impactMoments, setImpactMoments] = useState([]);
+  const [impactMinScore, setImpactMinScore] = useState(70);
   const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState('');
 
@@ -242,6 +243,12 @@ function App() {
         }
       }
 
+      if (inputNames.size === 1) {
+        await exportSingleSourceTimeline(inputNames.get(timeline[0].fileId));
+        setToast('Montaje terminado y descargado.');
+        return;
+      }
+
       const segmentNames = [];
       for (let index = 0; index < timeline.length; index += 1) {
         const item = timeline[index];
@@ -249,6 +256,7 @@ function App() {
         segmentNames.push(segment);
         setStatus(`Procesando bloque ${index + 1} de ${timeline.length}…`);
         await ffmpeg.exec([
+          '-y',
           '-ss', String(item.start), '-i', inputNames.get(item.fileId), '-t', String(item.duration),
           '-map', '0:v:0', '-map', '0:a?',
           '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=30',
@@ -260,7 +268,7 @@ function App() {
       setStatus('Uniendo todos los bloques…');
       const list = segmentNames.map((name) => `file '${name}'`).join('\n');
       await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(list));
-      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4']);
+      await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4']);
       const data = await ffmpeg.readFile('video-respuesta.mp4');
       downloadBytes(data, `video-respuesta-${Date.now()}.mp4`);
       setToast('Montaje terminado y descargado.');
@@ -268,6 +276,39 @@ function App() {
       console.error(error);
       setToast('La exportación no pudo terminar. Reduce la duración o utiliza vídeos MP4 H.264.');
     } finally { setWorking(false); setStatus(''); setProgress(0); }
+  }
+
+  async function exportSingleSourceTimeline(input) {
+    setStatus('Creando el montaje optimizado…');
+    const videoFilters = timeline.map((item, index) =>
+      `[0:v]trim=start=${item.start}:duration=${item.duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p[v${index}]`
+    );
+    const audioFilters = timeline.map((item, index) =>
+      `[0:a]atrim=start=${item.start}:duration=${item.duration},asetpts=PTS-STARTPTS,aresample=48000[a${index}]`
+    );
+    const inputsWithAudio = timeline.map((_, index) => `[v${index}][a${index}]`).join('');
+
+    try {
+      await ffmpeg.exec([
+        '-y', '-i', input,
+        '-filter_complex', `${[...videoFilters, ...audioFilters].join(';')};${inputsWithAudio}concat=n=${timeline.length}:v=1:a=1[outv][outa]`,
+        '-map', '[outv]', '-map', '[outa]', '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', 'video-respuesta.mp4'
+      ]);
+    } catch {
+      setStatus('El vídeo no tiene una pista de audio compatible. Exportando imagen…');
+      const inputsWithoutAudio = timeline.map((_, index) => `[v${index}]`).join('');
+      await ffmpeg.exec([
+        '-y', '-i', input,
+        '-filter_complex', `${videoFilters.join(';')};${inputsWithoutAudio}concat=n=${timeline.length}:v=1:a=0[outv]`,
+        '-map', '[outv]', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+        '-movflags', '+faststart', 'video-respuesta.mp4'
+      ]);
+    }
+
+    const data = await ffmpeg.readFile('video-respuesta.mp4');
+    downloadBytes(data, `video-respuesta-${Date.now()}.mp4`);
+    await ffmpeg.deleteFile('video-respuesta.mp4');
   }
 
   async function analyzeImpact() {
@@ -310,9 +351,15 @@ function App() {
           score: Math.max(40, Math.round((item.difference / max) * 100)),
           reason: item.difference > max * 0.7 ? 'Cambio visual fuerte' : 'Cambio de plano o movimiento'
         }))
-        .sort((a, b) => a.start - b.start);
+        .sort((a, b) => b.score - a.score);
       setImpactMoments(moments);
-      setToast('Análisis terminado. Estos resultados son orientativos.');
+      const selectedMoments = moments.filter((item) => item.score >= impactMinScore);
+      setClips(selectedMoments.map((moment) => makeClip(moment.start, moment.end, `Momento de impacto ${moment.score}/100`, moment.score)));
+      setTimeline(selectedMoments.map((moment) => ({
+        ...makeClip(moment.start, moment.end, `Momento de impacto ${moment.score}/100`, moment.score),
+        timelineId: uid()
+      })));
+      setToast(`Montaje creado automáticamente con ${selectedMoments.length} momentos de impacto.`);
     } catch (error) {
       console.error(error);
       setToast('No se pudo analizar este formato de vídeo.');
@@ -377,6 +424,11 @@ function App() {
 
               <section className="card impact-card">
                 <div className="card-title compact"><div><span className="number purple"><BarChart3 size={16}/></span><div><h2>Momentos con impacto</h2><p>Detecta cambios visuales destacados</p></div></div></div>
+                <label className="impact-threshold">Crear montaje desde 100 hasta
+                  <select value={impactMinScore} onChange={(e) => setImpactMinScore(Number(e.target.value))}>
+                    {[90, 80, 70, 60, 50, 40].map((score) => <option key={score} value={score}>{score} puntos</option>)}
+                  </select>
+                </label>
                 <button className="secondary-button full" onClick={analyzeImpact} disabled={analyzing}>{analyzing ? <LoaderCircle className="spin" size={17}/> : <WandSparkles size={17}/>} {analyzing ? 'Analizando…' : 'Analizar vídeo'}</button>
                 {!!impactMoments.length && <div className="impact-list">{impactMoments.map((moment) => <div key={moment.id}><button className="impact-play" onClick={() => seekTo(moment.start)}><Play size={13}/></button><span><strong>{formatTime(moment.start)} — {formatTime(moment.end)}</strong><small>{moment.reason}</small></span><b>{moment.score}</b><button className="mini-add" onClick={() => addImpactClip(moment)}><Plus size={14}/></button></div>)}</div>}
                 <p className="hint"><AlertTriangle size={14}/> La puntuación es orientativa y no predice la viralidad.</p>
@@ -391,7 +443,7 @@ function App() {
         </section>}
 
         {source && <section className="card avatar-section">
-          <div className="section-heading"><div><span className="number green"><UserRound size={17}/></span><div><h2>Vídeos del avatar o contenido propio</h2><p>Añade introducciones, explicaciones y conclusiones</p></div></div><label className="secondary-button"><Upload size={16}/> Subir vídeos<input type="file" accept="video/*" multiple onChange={onAvatarSelected}/></label></div>
+          <div className="section-heading"><div><span className="number green"><UserRound size={17}/></span><div><h2>Vídeos del avatar <small className="optional-badge">Opcional</small></h2><p>Si quieres, añade introducciones, explicaciones o conclusiones</p></div></div><label className="secondary-button"><Upload size={16}/> Subir vídeos<input type="file" accept="video/*" multiple onChange={onAvatarSelected}/></label></div>
           {!avatars.length ? <div className="empty-inline"><UserRound size={24}/><span>Sube los vídeos del avatar que intercalarás con los fragmentos.</span></div> : <div className="avatar-grid">{avatars.map((avatar) => <article key={avatar.id}><video src={avatar.url} onLoadedMetadata={(e) => updateAvatarDuration(avatar.id, e.currentTarget.duration)} controls/><div><strong>{avatar.name}</strong><small>{formatTime(avatar.duration)} · Contenido propio</small></div><button className="secondary-button full" onClick={() => addAvatarToTimeline(avatar)}><Plus size={16}/> Añadir al montaje</button></article>)}</div>}
         </section>}
 
@@ -399,7 +451,7 @@ function App() {
           <div className="section-heading"><div><span className="number">4</span><div><h2>Montaje final</h2><p>Ordena los bloques en el orden en que deben aparecer</p></div></div><span className="total-time">Total: {formatTime(timelineStats.total)}</span></div>
           {!timeline.length ? <div className="empty-state"><GripVertical size={28}/><p>Añade cortes y vídeos del avatar para construir la respuesta.</p></div> : <div className="timeline-list">{timeline.map((item, index) => <article key={item.timelineId} className={item.kind}><GripVertical className="grip" size={19}/><span className="timeline-index">{index + 1}</span><span className="timeline-type">{item.kind === 'avatar' ? <UserRound size={17}/> : <Film size={17}/>}</span><div><strong>{item.label}</strong><small>{item.kind === 'avatar' ? 'Contenido propio' : `${formatTime(item.start)} → ${formatTime(item.end)}`} · {formatTime(item.duration)}</small></div><div className="reorder"><button disabled={index === 0} onClick={() => moveTimeline(index, -1)}><ArrowUp size={15}/></button><button disabled={index === timeline.length - 1} onClick={() => moveTimeline(index, 1)}><ArrowDown size={15}/></button><button onClick={() => setTimeline((items) => items.filter((entry) => entry.timelineId !== item.timelineId))}><Trash2 size={15}/></button></div></article>)}</div>}
 
-          {!!timeline.length && <div className="rights-meter"><div className="meter-copy"><span><strong>Contenido ajeno: {timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.original)} de fragmentos originales</small></span><span className="own"><strong>Contenido propio: {100 - timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.own)} de avatar</small></span></div><div className="meter"><span style={{ width: `${timelineStats.originalPercent}%` }}/></div>{timelineStats.originalPercent > 35 ? <p className="warning"><AlertTriangle size={16}/> El material original supera el 35 %. Considera añadir más análisis propio. Esto no determina por sí solo el copyright ni la monetización.</p> : <p className="good"><Check size={16}/> La mayor parte del montaje es contenido propio. Aun así, revisa que cada fragmento sea necesario para tu análisis.</p>}</div>}
+          {!!timeline.length && <div className="rights-meter"><div className="meter-copy"><span><strong>Fragmentos del vídeo: {timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.original)} seleccionados</small></span><span className="own"><strong>Vídeos de avatar: {100 - timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.own)} añadidos</small></span></div><div className="meter"><span style={{ width: `${timelineStats.originalPercent}%` }}/></div>{timelineStats.own === 0 ? <p className="good"><Check size={16}/> El avatar es opcional. Puedes generar y descargar el montaje solamente con estos fragmentos.</p> : <p className="good"><Check size={16}/> El montaje incluye los vídeos de avatar que has añadido.</p>}</div>}
 
           <div className="export-row"><div><h3>Exportación MP4 · 720p</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
         </section>}
