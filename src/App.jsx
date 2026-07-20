@@ -21,7 +21,7 @@ async function loadTranscriber(progressCallback) {
   if (!transcriberPromise) {
     transcriberPromise = import('@huggingface/transformers').then(async ({ env, pipeline }) => {
       env.allowLocalModels = false;
-      return pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+      return pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
         device: 'wasm',
         dtype: 'q8',
         progress_callback: progressCallback
@@ -32,6 +32,16 @@ async function loadTranscriber(progressCallback) {
     });
   }
   return transcriberPromise;
+}
+
+function cleanTranscriptText(value) {
+  return String(value || '')
+    .replace(/\[(música|aplausos|risas|silencio|inaudible)[^\]]*\]/gi, ' ')
+    .replace(/\b([a-záéíóúüñ0-9]+)(?:[\s,;:¡!¿?.-]+\1\b){2,}/giu, '$1')
+    .replace(/([^.!?]{3,45})(?:\s+\1){2,}/gi, '$1')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function App() {
@@ -206,39 +216,77 @@ function App() {
   }
 
   function createReadingScript() {
-    const cleanText = transcript.replace(/\s+/g, ' ').trim();
+    const cleanText = cleanTranscriptText(transcript);
     if (cleanText.length < 30) return setToast('Primero crea la transcripción automática del vídeo.');
-    const sentences = cleanText.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((value) => value.trim()).filter((value) => value.length > 20) || [];
-    if (!sentences.length) return setToast('No se han encontrado frases suficientes para crear el guion.');
-    const blockCount = Math.max(2, Math.min(6, Math.round(Number(speechDuration) / 7)));
-    const selected = Array.from({ length: Math.min(blockCount, sentences.length) }, (_, index) =>
-      sentences[Math.min(sentences.length - 1, Math.round(index * (sentences.length - 1) / Math.max(1, blockCount - 1)))]
+
+    const rawSentences = cleanText.match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+      ?.map((value, index) => ({ value: value.trim(), index }))
+      .filter(({ value }) => value.length > 25) || [];
+
+    const candidates = rawSentences.map(({ value, index }) => {
+      const sentence = value.replace(/^[-–—•\s]+/, '').replace(/\s+/g, ' ').trim();
+      const words = sentence.toLocaleLowerCase('es').match(/[a-záéíóúüñ0-9]+/gi) || [];
+      const uniqueRatio = words.length ? new Set(words).size / words.length : 0;
+      const incompleteQuestion = /^[¿-]?\s*(qué|quién|cómo|cuándo|dónde|por qué|quieres|tienes)\b/i.test(sentence);
+      const score = Math.min(words.length, 28) + uniqueRatio * 25 - Math.max(0, words.length - 42) * 2 - (incompleteQuestion ? 25 : 0);
+      return { sentence, words, uniqueRatio, score, index };
+    }).filter(({ words, uniqueRatio, sentence }) =>
+      words.length >= 8 && words.length <= 48 && uniqueRatio >= 0.58 &&
+      !/^(sí|no|vale|bueno|pues|eh)[,\s.!?]*$/i.test(sentence)
     );
-    const opening = {
-      informativo: 'En este vídeo vamos a revisar varias afirmaciones importantes y a ponerlas en contexto.',
-      critico: 'Vamos a analizar este vídeo con calma, porque algunas de sus afirmaciones necesitan más contexto.',
-      sencillo: 'Voy a explicarte de forma sencilla qué se está diciendo en este vídeo y qué debemos tener en cuenta.',
-      contundente: 'Hay varios puntos de este vídeo que no deberíamos aceptar sin analizarlos primero.',
-      divertido: 'Vamos a ver este vídeo paso a paso, porque hay bastante que comentar.'
-    }[scriptStyle];
-    const connectors = {
-      informativo: ['Aquí se plantea una idea relevante:', 'Otro punto importante es:', 'También debemos prestar atención a esta afirmación:', 'Por último, aparece esta idea:'],
-      critico: ['El primer punto que debemos cuestionar es:', 'Aquí falta explicar algo importante:', 'Esta afirmación también necesita pruebas y contexto:', 'Conviene detenerse en este último punto:'],
-      sencillo: ['Dicho de una forma más sencilla:', 'La siguiente idea significa que:', 'Lo importante de este punto es:', 'Y hay otra parte que debemos entender:'],
-      contundente: ['Aquí está el primer problema:', 'Esta afirmación no puede darse por cierta sin más:', 'Hay otro punto que debemos señalar:', 'Y este detalle tampoco debería pasar desapercibido:'],
-      divertido: ['Empezamos fuerte con esta idea:', 'Pero espera, porque después aparece esto:', 'Aquí es donde la cosa se pone interesante:', 'Y todavía queda este punto:']
-    }[scriptStyle];
-    const reflections = {
-      informativo: 'Antes de sacar una conclusión, conviene contrastar esta información y conocer el contexto completo.',
-      critico: 'Que aparezca en un vídeo no significa que debamos aceptarlo sin comprobar la fuente y los datos.',
-      sencillo: 'Por eso es mejor quedarse con la idea principal, pero sin perder de vista el contexto.',
-      contundente: 'Una afirmación así necesita argumentos claros; repetirla no la convierte automáticamente en cierta.',
-      divertido: 'Suena convincente, pero mejor revisarlo antes de darlo por bueno.'
-    }[scriptStyle];
-    const blocks = selected.map((sentence, index) => `COMENTARIO ${index + 1}\n${connectors[index % connectors.length]} “${sentence.replace(/[.!?]+$/, '')}”. ${reflections}`);
-    const closing = 'En conclusión, el vídeo plantea cuestiones interesantes, pero lo mejor es analizar cada afirmación, comprobar sus fuentes y formar nuestra propia opinión. Déjame en los comentarios qué piensas tú.';
-    setGeneratedScript(`INTRODUCCIÓN\n${opening}\n\n${blocks.join('\n\n')}\n\nCONCLUSIÓN\n${closing}`);
-    setToast('Guion creado. Puedes editarlo antes de grabarte.');
+
+    const ranked = [...candidates].sort((a, b) => b.score - a.score);
+    const distinct = [];
+    for (const candidate of ranked) {
+      const candidateWords = new Set(candidate.words.filter((word) => word.length > 3));
+      const tooSimilar = distinct.some((selected) => {
+        const selectedWords = new Set(selected.words.filter((word) => word.length > 3));
+        const common = [...candidateWords].filter((word) => selectedWords.has(word)).length;
+        return common / Math.max(1, Math.min(candidateWords.size, selectedWords.size)) > 0.7;
+      });
+      if (!tooSimilar) distinct.push(candidate);
+    }
+
+    const blockCount = Math.max(2, Math.min(5, Math.round(Number(speechDuration) / 8)));
+    const selected = distinct.slice(0, blockCount).sort((a, b) => a.index - b.index);
+    if (selected.length < 2) return setToast('La voz no se ha entendido con suficiente claridad. Prueba con un vídeo con menos ruido.');
+
+    const openings = {
+      informativo: 'He revisado este vídeo y estos son los puntos principales que merece la pena comentar.',
+      critico: 'He escuchado con atención este vídeo y hay varias ideas que conviene analizar con calma.',
+      sencillo: 'Voy a resumirte de forma sencilla lo más importante de este vídeo.',
+      contundente: 'Después de ver este vídeo, hay varios puntos que no deberían pasar desapercibidos.',
+      divertido: 'He visto el vídeo completo y hay varias partes que merece la pena comentar.'
+    };
+    const introductions = {
+      informativo: ['El primer asunto importante aparece cuando se explica que', 'Más adelante también se señala que', 'Otro punto que aporta contexto es que', 'Finalmente, el vídeo sostiene que'],
+      critico: ['El primer punto que quiero revisar es la afirmación de que', 'También conviene detenerse cuando se dice que', 'Otro aspecto que necesita contexto es que', 'La última idea que debemos analizar es que'],
+      sencillo: ['La primera idea importante es que', 'Después se explica que', 'También debemos tener en cuenta que', 'Por último, se comenta que'],
+      contundente: ['Lo primero que debemos señalar es que', 'El segundo punto que llama la atención es que', 'También resulta importante que', 'Y hay una última afirmación:'],
+      divertido: ['La primera parte que me llama la atención es que', 'Pero después aparece otra idea: que', 'La cosa continúa cuando se explica que', 'Y para terminar, se comenta que']
+    };
+    const reactions = {
+      informativo: ['Este punto ayuda a entender el tema, aunque conviene comprobar el contexto completo.', 'Es un dato relevante y merece compararse con otras fuentes.', 'Aquí está una de las claves para interpretar correctamente el vídeo.', 'Esta afirmación resume buena parte del mensaje principal.'],
+      critico: ['Mi opinión es que esta afirmación necesita datos y contexto antes de aceptarla.', 'Aquí no basta con afirmarlo: también sería necesario explicar en qué pruebas se apoya.', 'Este punto puede ser razonable, pero el vídeo debería desarrollarlo mejor.', 'Por eso conviene separar la opinión de los hechos comprobables.'],
+      sencillo: ['Dicho de otra forma, esta es una de las ideas centrales del vídeo.', 'Lo importante aquí es entender el contexto y no quedarse solo con una frase.', 'Este punto se entiende mejor si lo relacionamos con el resto del vídeo.', 'Esa es la idea principal que yo destacaría.'],
+      contundente: ['Mi valoración es clara: una afirmación así debe estar respaldada por hechos.', 'No deberíamos dar este punto por cierto sin conocer todos los datos.', 'Aquí es donde debemos prestar especial atención y pedir una explicación completa.', 'Esta afirmación merece una comprobación antes de compartirla como cierta.'],
+      divertido: ['Dicho así llama mucho la atención, aunque conviene mirar el contexto completo.', 'Aquí es donde el vídeo empieza a ponerse realmente interesante.', 'Es una buena frase para detenernos y pensar qué significa en realidad.', 'Y este punto deja bastante espacio para el debate.']
+    };
+    const closings = {
+      informativo: 'En resumen, estas son las ideas principales que presenta el vídeo. Lo más útil es contrastarlas, revisar el contexto y sacar una conclusión propia.',
+      critico: 'Mi conclusión es que el vídeo plantea asuntos interesantes, pero varias afirmaciones necesitan más contexto y pruebas. Esta es mi valoración; ahora me interesa conocer la tuya.',
+      sencillo: 'En resumen, el vídeo presenta varias ideas importantes. Yo me quedaría con estos puntos y comprobaría la información antes de sacar una conclusión.',
+      contundente: 'En conclusión, no debemos aceptar una afirmación solamente porque aparezca en un vídeo. Hay que revisar los hechos, comparar fuentes y después formar una opinión.',
+      divertido: 'Y hasta aquí mi repaso del vídeo. Hay ideas interesantes, otras discutibles y bastante material para conversar. ¿Tú qué opinas?'
+    };
+
+    const blocks = selected.map(({ sentence }, index) => {
+      const cleanSentence = sentence.replace(/[.!?]+$/, '').replace(/^["“”]+|["“”]+$/g, '');
+      return `COMENTARIO ${index + 1}\n${introductions[scriptStyle][index % introductions[scriptStyle].length]} «${cleanSentence}». ${reactions[scriptStyle][index % reactions[scriptStyle].length]}`;
+    });
+
+    setGeneratedScript(`INTRODUCCIÓN\n${openings[scriptStyle]}\n\n${blocks.join('\n\n')}\n\nCONCLUSIÓN\n${closings[scriptStyle]}`);
+    setToast('Guion mejorado. Puedes editarlo antes de grabarte.');
   }
 
   async function createAutomaticTranscript() {
@@ -273,9 +321,12 @@ function App() {
         task: 'transcribe',
         chunk_length_s: 30,
         stride_length_s: 5,
-        return_timestamps: false
+        return_timestamps: false,
+        repetition_penalty: 1.15,
+        no_repeat_ngram_size: 3,
+        condition_on_prev_tokens: false
       });
-      const text = String(result?.text || '').replace(/\s+/g, ' ').trim();
+      const text = cleanTranscriptText(result?.text);
       if (text.length < 10) throw new Error('No se ha detectado voz clara en el vídeo.');
       setTranscript(text);
       setGeneratedScript('');
