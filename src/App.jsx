@@ -245,8 +245,7 @@ function App() {
 
       if (inputNames.size === 1) {
         const input = inputNames.get(timeline[0].fileId);
-        const optimized = await exportSingleSourceTimeline(input);
-        if (!optimized) await exportSingleSourceBySegments(input);
+        await exportSingleSourceBySegments(input);
         setToast('Montaje terminado y descargado.');
         return;
       }
@@ -310,21 +309,30 @@ function App() {
   }
 
   async function exportSingleSourceBySegments(input) {
-    setStatus('Usando el modo compatible: procesando los fragmentos uno a uno…');
+    setStatus('Usando el modo compatible sin recodificar…');
     const segmentNames = [];
 
     for (let index = 0; index < timeline.length; index += 1) {
       const item = timeline[index];
       const segment = `compatible-${index}.mp4`;
       segmentNames.push(segment);
-      setStatus(`Modo compatible: fragmento ${index + 1} de ${timeline.length}…`);
-      const result = await ffmpeg.exec([
+      setStatus(`Modo compatible: recortando fragmento ${index + 1} de ${timeline.length}…`);
+      let result = await ffmpeg.exec([
+        '-y', '-ss', String(item.start), '-i', input, '-t', String(item.duration),
+        '-map', '0:v:0', '-map', '0:a?', '-c', 'copy',
+        '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', segment
+      ]);
+
+      if (result !== 0) {
+        setStatus(`Convirtiendo fragmento ${index + 1} de ${timeline.length}…`);
+        result = await ffmpeg.exec([
         '-y', '-ss', String(item.start), '-i', input, '-t', String(item.duration),
         '-map', '0:v:0', '-map', '0:a?',
         '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2:black,fps=25',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '24', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', segment
-      ]);
+        ]);
+      }
       if (result !== 0) throw new Error(`El formato del fragmento ${index + 1} no es compatible.`);
     }
 
