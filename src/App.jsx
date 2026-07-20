@@ -38,10 +38,10 @@ function App() {
   const [toast, setToast] = useState('');
   const [exportError, setExportError] = useState('');
   const [outputFormat, setOutputFormat] = useState('youtube');
-  const [subtitles, setSubtitles] = useState([]);
-  const [subtitleText, setSubtitleText] = useState('');
-  const [subtitleStart, setSubtitleStart] = useState(0);
-  const [subtitleEnd, setSubtitleEnd] = useState(3);
+  const [transcript, setTranscript] = useState('');
+  const [scriptStyle, setScriptStyle] = useState('informativo');
+  const [speechDuration, setSpeechDuration] = useState(20);
+  const [generatedScript, setGeneratedScript] = useState('');
   const exportStageRef = useRef('inicio');
   const ffmpegLogsRef = useRef([]);
 
@@ -187,17 +187,46 @@ function App() {
     });
   }
 
-  function addSubtitle() {
-    const text = subtitleText.trim();
-    const start = Math.max(0, Number(subtitleStart));
-    const end = Math.min(timelineStats.total || Number(subtitleEnd), Number(subtitleEnd));
-    if (!text) return setToast('Escribe el texto del subtítulo.');
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return setToast('La salida del subtítulo debe ser posterior a la entrada.');
-    setSubtitles((items) => [...items, { id: uid(), text, start, end }].sort((a, b) => a.start - b.start));
-    setSubtitleText('');
-    setSubtitleStart(end);
-    setSubtitleEnd(Math.min(timelineStats.total || end + 3, end + 3));
-    setToast('Subtítulo añadido al montaje.');
+  function createReadingScript() {
+    const cleanText = transcript.replace(/\s+/g, ' ').trim();
+    if (cleanText.length < 30) return setToast('Pega una transcripción o un resumen más completo.');
+    const sentences = cleanText.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((value) => value.trim()).filter((value) => value.length > 20) || [];
+    if (!sentences.length) return setToast('No se han encontrado frases suficientes para crear el guion.');
+    const blockCount = Math.max(2, Math.min(6, Math.round(Number(speechDuration) / 7)));
+    const selected = Array.from({ length: Math.min(blockCount, sentences.length) }, (_, index) =>
+      sentences[Math.min(sentences.length - 1, Math.round(index * (sentences.length - 1) / Math.max(1, blockCount - 1)))]
+    );
+    const opening = {
+      informativo: 'En este vídeo vamos a revisar varias afirmaciones importantes y a ponerlas en contexto.',
+      critico: 'Vamos a analizar este vídeo con calma, porque algunas de sus afirmaciones necesitan más contexto.',
+      sencillo: 'Voy a explicarte de forma sencilla qué se está diciendo en este vídeo y qué debemos tener en cuenta.',
+      contundente: 'Hay varios puntos de este vídeo que no deberíamos aceptar sin analizarlos primero.',
+      divertido: 'Vamos a ver este vídeo paso a paso, porque hay bastante que comentar.'
+    }[scriptStyle];
+    const connectors = {
+      informativo: ['Aquí se plantea una idea relevante:', 'Otro punto importante es:', 'También debemos prestar atención a esta afirmación:', 'Por último, aparece esta idea:'],
+      critico: ['El primer punto que debemos cuestionar es:', 'Aquí falta explicar algo importante:', 'Esta afirmación también necesita pruebas y contexto:', 'Conviene detenerse en este último punto:'],
+      sencillo: ['Dicho de una forma más sencilla:', 'La siguiente idea significa que:', 'Lo importante de este punto es:', 'Y hay otra parte que debemos entender:'],
+      contundente: ['Aquí está el primer problema:', 'Esta afirmación no puede darse por cierta sin más:', 'Hay otro punto que debemos señalar:', 'Y este detalle tampoco debería pasar desapercibido:'],
+      divertido: ['Empezamos fuerte con esta idea:', 'Pero espera, porque después aparece esto:', 'Aquí es donde la cosa se pone interesante:', 'Y todavía queda este punto:']
+    }[scriptStyle];
+    const reflections = {
+      informativo: 'Antes de sacar una conclusión, conviene contrastar esta información y conocer el contexto completo.',
+      critico: 'Que aparezca en un vídeo no significa que debamos aceptarlo sin comprobar la fuente y los datos.',
+      sencillo: 'Por eso es mejor quedarse con la idea principal, pero sin perder de vista el contexto.',
+      contundente: 'Una afirmación así necesita argumentos claros; repetirla no la convierte automáticamente en cierta.',
+      divertido: 'Suena convincente, pero mejor revisarlo antes de darlo por bueno.'
+    }[scriptStyle];
+    const blocks = selected.map((sentence, index) => `COMENTARIO ${index + 1}\n${connectors[index % connectors.length]} “${sentence.replace(/[.!?]+$/, '')}”. ${reflections}`);
+    const closing = 'En conclusión, el vídeo plantea cuestiones interesantes, pero lo mejor es analizar cada afirmación, comprobar sus fuentes y formar nuestra propia opinión. Déjame en los comentarios qué piensas tú.';
+    setGeneratedScript(`INTRODUCCIÓN\n${opening}\n\n${blocks.join('\n\n')}\n\nCONCLUSIÓN\n${closing}`);
+    setToast('Guion creado. Puedes editarlo antes de grabarte.');
+  }
+
+  async function copyReadingScript() {
+    if (!generatedScript) return;
+    await navigator.clipboard.writeText(generatedScript);
+    setToast('Guion copiado.');
   }
 
   function seekTo(time) {
@@ -296,10 +325,8 @@ function App() {
       setStatus('Uniendo todos los bloques…');
       const list = segmentNames.map((name) => `file '${name}'`).join('\n');
       await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(list));
-      const assembledName = subtitles.length ? 'video-sin-subtitulos.mp4' : 'video-respuesta.mp4';
-      const concatResult = await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', assembledName]);
+      const concatResult = await ffmpeg.exec(['-y', '-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4']);
       if (concatResult !== 0) throw new Error('No se pudieron unir los bloques del montaje.');
-      if (subtitles.length) await burnSubtitles(assembledName, format);
       const data = await ffmpeg.readFile('video-respuesta.mp4');
       downloadBytes(data, `video-respuesta-${outputFormat}-${Date.now()}.mp4`);
       setToast('Montaje terminado y descargado.');
@@ -311,68 +338,6 @@ function App() {
       setExportError(detail);
       setToast('La exportación se detuvo. Consulta el detalle del error que aparece debajo.');
     } finally { setWorking(false); setStatus(''); setProgress(0); }
-  }
-
-  async function burnSubtitles(inputName, format) {
-    exportStageRef.current = 'integración de los subtítulos';
-    setStatus('Añadiendo subtítulos al vídeo…');
-    const validSubtitles = subtitles.filter((item) => item.text.trim() && item.end > item.start && item.start < timelineStats.total);
-    const subtitleFiles = [];
-    for (let index = 0; index < validSubtitles.length; index += 1) {
-      const name = `subtitle-${index}.png`;
-      subtitleFiles.push(name);
-      await ffmpeg.writeFile(name, await createSubtitlePng(validSubtitles[index].text, format.width));
-    }
-
-    const inputs = subtitleFiles.flatMap((name) => ['-i', name]);
-    let previous = '[0:v]';
-    const filters = validSubtitles.map((subtitle, index) => {
-      const output = `[subbed${index}]`;
-      const filter = `${previous}[${index + 1}:v]overlay=(W-w)/2:H-h-48:eof_action=repeat:enable='between(t,${subtitle.start},${Math.min(subtitle.end, timelineStats.total)})'${output}`;
-      previous = output;
-      return filter;
-    });
-    const result = await ffmpeg.exec([
-      '-y', '-i', inputName, ...inputs,
-      '-filter_complex', filters.join(';'), '-map', previous, '-map', '0:a?',
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
-      '-c:a', 'copy', '-movflags', '+faststart', 'video-respuesta.mp4'
-    ]);
-    if (result !== 0) throw new Error('No se pudieron integrar los subtítulos.');
-    for (const name of subtitleFiles) await ffmpeg.deleteFile(name);
-    await ffmpeg.deleteFile(inputName);
-  }
-
-  async function createSubtitlePng(text, videoWidth) {
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.min(videoWidth - 64, 1100);
-    canvas.height = 190;
-    const ctx = canvas.getContext('2d');
-    const fontSize = videoWidth <= 720 ? 34 : 42;
-    ctx.font = `700 ${fontSize}px Arial, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const words = text.split(/\s+/);
-    const lines = [];
-    let line = '';
-    for (const word of words) {
-      const test = line ? `${line} ${word}` : word;
-      if (ctx.measureText(test).width > canvas.width - 52 && line) { lines.push(line); line = word; }
-      else line = test;
-    }
-    if (line) lines.push(line);
-    const visibleLines = lines.slice(0, 3);
-    const lineHeight = fontSize * 1.22;
-    const boxHeight = visibleLines.length * lineHeight + 28;
-    const boxY = (canvas.height - boxHeight) / 2;
-    ctx.fillStyle = 'rgba(0,0,0,.72)';
-    ctx.beginPath();
-    ctx.roundRect(8, boxY, canvas.width - 16, boxHeight, 16);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    visibleLines.forEach((value, index) => ctx.fillText(value, canvas.width / 2, boxY + 14 + lineHeight * (index + .5)));
-    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('No se pudo crear el subtítulo.')), 'image/png'));
-    return new Uint8Array(await blob.arrayBuffer());
   }
 
   async function exportSingleSourceTimeline(input) {
@@ -591,7 +556,7 @@ function App() {
 
           {!!timeline.length && <section className="export-options">
             <div className="option-block"><h3>Formato final</h3><p>Elige dónde vas a publicar el vídeo.</p><div className="format-grid">{Object.entries(OUTPUT_FORMATS).map(([key, format]) => <button key={key} className={outputFormat === key ? 'selected' : ''} onClick={() => setOutputFormat(key)}><strong>{format.label}</strong><small>{format.detail}</small></button>)}</div></div>
-            <div className="option-block"><div className="subtitle-heading"><div><h3>Subtítulos</h3><p>El tiempo se cuenta desde el inicio del montaje final.</p></div><span>{subtitles.length} añadidos</span></div><div className="subtitle-form"><label>Texto<input type="text" maxLength="140" placeholder="Escribe el subtítulo" value={subtitleText} onChange={(e) => setSubtitleText(e.target.value)}/></label><label>Entrada (s)<input type="number" min="0" step="0.1" value={subtitleStart} onChange={(e) => setSubtitleStart(e.target.value)}/></label><label>Salida (s)<input type="number" min="0.1" step="0.1" value={subtitleEnd} onChange={(e) => setSubtitleEnd(e.target.value)}/></label><button className="secondary-button" onClick={addSubtitle}><Plus size={16}/> Añadir</button></div>{!!subtitles.length && <div className="subtitle-list">{subtitles.map((item) => <div key={item.id}><span><strong>{item.text}</strong><small>{formatTime(item.start)} → {formatTime(item.end)}</small></span><button onClick={() => setSubtitles((items) => items.filter((entry) => entry.id !== item.id))}><Trash2 size={15}/></button></div>)}</div>}</div>
+            <div className="option-block script-block"><div className="script-heading"><div><h3>Crear mi guion</h3><p>Pega la transcripción o un resumen. Todo se procesa en tu navegador, sin API.</p></div><span>Sin API</span></div><textarea className="transcript-input" placeholder="Pega aquí lo que se dice en el vídeo…" value={transcript} onChange={(e) => setTranscript(e.target.value)}/><div className="script-controls"><label>Estilo<select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)}><option value="informativo">Informativo</option><option value="critico">Crítico</option><option value="sencillo">Explicación sencilla</option><option value="contundente">Contundente</option><option value="divertido">Divertido</option></select></label><label>Duración por intervención<select value={speechDuration} onChange={(e) => setSpeechDuration(Number(e.target.value))}><option value="10">10 segundos</option><option value="20">20 segundos</option><option value="30">30 segundos</option></select></label><button className="primary-button" onClick={createReadingScript}><WandSparkles size={16}/> Crear texto para leer</button></div>{generatedScript && <div className="generated-script"><div><strong>Texto que debes leer</strong><button className="text-button" onClick={copyReadingScript}>Copiar guion</button></div><textarea value={generatedScript} onChange={(e) => setGeneratedScript(e.target.value)}/><small>Puedes modificar cualquier frase antes de grabar tus vídeos.</small></div>}</div>
           </section>}
 
           <div className="export-row"><div><h3>Exportación MP4 · {OUTPUT_FORMATS[outputFormat].label}</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
