@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile } from '@ffmpeg/util';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import {
   AlertTriangle, ArrowDown, ArrowUp, BarChart3, Check, ChevronRight,
   Download, Film, GripVertical, LoaderCircle, Pause, Play, Plus,
@@ -31,9 +31,15 @@ function App() {
   const [impactMinScore, setImpactMinScore] = useState(70);
   const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState('');
+  const [exportError, setExportError] = useState('');
+  const exportStageRef = useRef('inicio');
+  const ffmpegLogsRef = useRef([]);
 
   useEffect(() => {
     ffmpeg.on('progress', ({ progress: value }) => setProgress(Math.max(0, Math.min(100, Math.round(value * 100)))));
+    ffmpeg.on('log', ({ message }) => {
+      ffmpegLogsRef.current = [...ffmpegLogsRef.current.slice(-7), message];
+    });
   }, []);
 
   useEffect(() => {
@@ -179,15 +185,17 @@ function App() {
 
   async function ensureFfmpeg() {
     if (ffmpegReady) return;
+    exportStageRef.current = 'carga del motor FFmpeg';
     setStatus('Preparando el motor de vídeo por primera vez…');
     await ffmpeg.load({
-      coreURL: '/ffmpeg/ffmpeg-core.js',
-      wasmURL: '/ffmpeg/ffmpeg-core.wasm'
+      coreURL: await toBlobURL('/ffmpeg/ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await toBlobURL('/ffmpeg/ffmpeg-core.wasm', 'application/wasm')
     });
     setFfmpegReady(true);
   }
 
   async function writeInput(fileItem, suffix = '') {
+    exportStageRef.current = 'lectura del archivo original';
     const name = `input-${fileItem.id}${suffix}.${fileExtension(fileItem.file)}`;
     try { await ffmpeg.deleteFile(name); } catch { /* todavía no existe */ }
     await ffmpeg.writeFile(name, await fetchFile(fileItem.file));
@@ -230,7 +238,8 @@ function App() {
 
   async function exportTimeline() {
     if (!timeline.length) return setToast('Añade al menos un elemento a la línea de tiempo.');
-    setWorking(true); setProgress(0);
+    setWorking(true); setProgress(0); setExportError('');
+    ffmpegLogsRef.current = [];
     try {
       await ensureFfmpeg();
       setStatus('Preparando los archivos para el montaje…');
@@ -276,7 +285,11 @@ function App() {
       setToast('Montaje terminado y descargado.');
     } catch (error) {
       console.error(error);
-      setToast(error?.message || 'La exportación no pudo terminar con este formato de vídeo.');
+      const rawError = error?.message || String(error || 'Error desconocido');
+      const lastLog = [...ffmpegLogsRef.current].reverse().find((line) => /error|invalid|failed|not found|unsupported|memory|abort/i.test(line)) || ffmpegLogsRef.current.at(-1);
+      const detail = `Fallo durante ${exportStageRef.current}: ${rawError}${lastLog ? ` · FFmpeg: ${lastLog}` : ''}`;
+      setExportError(detail);
+      setToast('La exportación se detuvo. Consulta el detalle del error que aparece debajo.');
     } finally { setWorking(false); setStatus(''); setProgress(0); }
   }
 
@@ -308,6 +321,7 @@ function App() {
   }
 
   async function exportSingleSourceBySegments(input) {
+    exportStageRef.current = 'preparación del modo compatible';
     setStatus('Usando el modo compatible sin recodificar…');
     const segmentNames = [];
 
@@ -316,6 +330,7 @@ function App() {
       const segment = `compatible-${index}.mp4`;
       segmentNames.push(segment);
       setStatus(`Modo compatible: recortando fragmento ${index + 1} de ${timeline.length}…`);
+      exportStageRef.current = `recorte del fragmento ${index + 1} de ${timeline.length}`;
       let result = await ffmpeg.exec([
         '-y', '-ss', String(item.start), '-i', input, '-t', String(item.duration),
         '-map', '0:v:0', '-map', '0:a?', '-c', 'copy',
@@ -336,6 +351,7 @@ function App() {
     }
 
     const list = segmentNames.map((name) => `file '${name}'`).join('\n');
+    exportStageRef.current = 'unión final de los fragmentos';
     await ffmpeg.writeFile('compatible-list.txt', new TextEncoder().encode(list));
     const concatResult = await ffmpeg.exec([
       '-y', '-f', 'concat', '-safe', '0', '-i', 'compatible-list.txt',
@@ -492,6 +508,7 @@ function App() {
           {!!timeline.length && <div className="rights-meter"><div className="meter-copy"><span><strong>Fragmentos del vídeo: {timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.original)} seleccionados</small></span><span className="own"><strong>Vídeos de avatar: {100 - timelineStats.originalPercent}%</strong><small>{formatTime(timelineStats.own)} añadidos</small></span></div><div className="meter"><span style={{ width: `${timelineStats.originalPercent}%` }}/></div>{timelineStats.own === 0 ? <p className="good"><Check size={16}/> El avatar es opcional. Puedes generar y descargar el montaje solamente con estos fragmentos.</p> : <p className="good"><Check size={16}/> El montaje incluye los vídeos de avatar que has añadido.</p>}</div>}
 
           <div className="export-row"><div><h3>Exportación MP4 · 720p</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
+          {exportError && <div className="export-error"><div><AlertTriangle size={18}/><strong>Detalle de la exportación</strong><button onClick={() => setExportError('')} aria-label="Cerrar"><X size={16}/></button></div><p>{exportError}</p></div>}
         </section>}
 
         <footer><p>ClipRespuesta no descarga vídeos de plataformas externas. Sube únicamente archivos que tengas derecho a utilizar.</p></footer>
