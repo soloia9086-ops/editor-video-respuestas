@@ -41,10 +41,15 @@ function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  const sourceRef = useRef(null);
+  const avatarsRef = useRef([]);
+
+  useEffect(() => { sourceRef.current = source; }, [source]);
+  useEffect(() => { avatarsRef.current = avatars; }, [avatars]);
   useEffect(() => () => {
-    if (source?.url) URL.revokeObjectURL(source.url);
-    avatars.forEach((item) => URL.revokeObjectURL(item.url));
-  }, [source, avatars]);
+    if (sourceRef.current?.url) URL.revokeObjectURL(sourceRef.current.url);
+    avatarsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
+  }, []);
 
   const filesById = useMemo(() => {
     const map = new Map();
@@ -135,6 +140,15 @@ function App() {
 
   function addClipToTimeline(clip) {
     setTimeline((items) => [...items, { ...clip, timelineId: uid() }]);
+  }
+
+  function createAutomaticTimeline() {
+    if (!clips.length) return setToast('Primero crea los cortes del vídeo.');
+    const automaticTimeline = [...clips]
+      .sort((a, b) => a.start - b.start)
+      .map((clip) => ({ ...clip, timelineId: uid() }));
+    setTimeline(automaticTimeline);
+    setToast(`Montaje automático creado con ${automaticTimeline.length} fragmentos.`);
   }
 
   function addAvatarToTimeline(avatar) {
@@ -372,7 +386,7 @@ function App() {
         )}
 
         {source && <section className="card library-section">
-          <div className="section-heading"><div><span className="number">3</span><div><h2>Biblioteca de cortes</h2><p>{clips.length ? `${clips.length} fragmentos disponibles` : 'Crea cortes manuales, automáticos o sugeridos'}</p></div></div>{clips.length > 0 && <button className="danger-text" onClick={() => setClips([])}><Trash2 size={15}/> Vaciar</button>}</div>
+          <div className="section-heading"><div><span className="number">3</span><div><h2>Biblioteca de cortes</h2><p>{clips.length ? `${clips.length} fragmentos disponibles` : 'Crea cortes manuales, automáticos o sugeridos'}</p></div></div>{clips.length > 0 && <div className="library-actions"><button className="secondary-button" onClick={createAutomaticTimeline}><WandSparkles size={16}/> Crear montaje automático</button><button className="danger-text" onClick={() => setClips([])}><Trash2 size={15}/> Vaciar</button></div>}</div>
           {!clips.length ? <div className="empty-state"><Film size={30}/><p>Aquí aparecerán tus fragmentos.</p></div> : <div className="clip-grid">{clips.map((clip) => <article className="clip-card" key={clip.id}><button className="clip-preview" onClick={() => seekTo(clip.start)}><Play size={20}/><span>{formatTime(clip.start)}</span>{clip.impact && <b>{clip.impact}/100</b>}</button><div><strong>{clip.label}</strong><small>{formatTime(clip.start)} → {formatTime(clip.end)} · {formatTime(clip.duration)}</small></div><div className="clip-actions"><button title="Descargar fragmento" onClick={() => downloadClip(clip)}><Download size={16}/></button><button className="add-timeline" onClick={() => addClipToTimeline(clip)}><Plus size={16}/> Montaje</button><button title="Eliminar" onClick={() => setClips((items) => items.filter((item) => item.id !== clip.id))}><X size={16}/></button></div></article>)}</div>}
         </section>}
 
