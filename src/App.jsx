@@ -280,18 +280,20 @@ function App() {
 
   async function exportSingleSourceTimeline(input) {
     setStatus('Creando el montaje optimizado…');
+    const videoSplitOutputs = timeline.map((_, index) => `[vsrc${index}]`).join('');
+    const audioSplitOutputs = timeline.map((_, index) => `[asrc${index}]`).join('');
     const videoFilters = timeline.map((item, index) =>
-      `[0:v]trim=start=${item.start}:duration=${item.duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p[v${index}]`
+      `[vsrc${index}]trim=start=${item.start}:duration=${item.duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p[v${index}]`
     );
     const audioFilters = timeline.map((item, index) =>
-      `[0:a]atrim=start=${item.start}:duration=${item.duration},asetpts=PTS-STARTPTS,aresample=48000[a${index}]`
+      `[asrc${index}]atrim=start=${item.start}:duration=${item.duration},asetpts=PTS-STARTPTS,aresample=48000[a${index}]`
     );
     const inputsWithAudio = timeline.map((_, index) => `[v${index}][a${index}]`).join('');
 
     try {
       await ffmpeg.exec([
         '-y', '-i', input,
-        '-filter_complex', `${[...videoFilters, ...audioFilters].join(';')};${inputsWithAudio}concat=n=${timeline.length}:v=1:a=1[outv][outa]`,
+        '-filter_complex', `[0:v]split=${timeline.length}${videoSplitOutputs};[0:a]asplit=${timeline.length}${audioSplitOutputs};${[...videoFilters, ...audioFilters].join(';')};${inputsWithAudio}concat=n=${timeline.length}:v=1:a=1[outv][outa]`,
         '-map', '[outv]', '-map', '[outa]', '-c:v', 'libx264', '-preset', 'ultrafast',
         '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', 'video-respuesta.mp4'
       ]);
@@ -300,7 +302,7 @@ function App() {
       const inputsWithoutAudio = timeline.map((_, index) => `[v${index}]`).join('');
       await ffmpeg.exec([
         '-y', '-i', input,
-        '-filter_complex', `${videoFilters.join(';')};${inputsWithoutAudio}concat=n=${timeline.length}:v=1:a=0[outv]`,
+        '-filter_complex', `[0:v]split=${timeline.length}${videoSplitOutputs};${videoFilters.join(';')};${inputsWithoutAudio}concat=n=${timeline.length}:v=1:a=0[outv]`,
         '-map', '[outv]', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
         '-movflags', '+faststart', 'video-respuesta.mp4'
       ]);
