@@ -3,7 +3,7 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile } from '@ffmpeg/util';
 import {
   AlertTriangle, ArrowDown, ArrowUp, BarChart3, Check, ChevronRight,
-  Download, Film, GripVertical, LoaderCircle, Pause, Play, Plus,
+  AudioLines, Download, Film, GripVertical, LoaderCircle, Pause, Play, Plus,
   Scissors, Sparkles, Trash2, Upload, UserRound, WandSparkles, X
 } from 'lucide-react';
 import { fileExtension, formatTime, safeName, uid } from './utils';
@@ -15,6 +15,24 @@ const OUTPUT_FORMATS = {
   square: { label: 'Cuadrado 1:1', detail: 'Redes sociales', width: 720, height: 720 }
 };
 const ffmpeg = new FFmpeg();
+let transcriberPromise = null;
+
+async function loadTranscriber(progressCallback) {
+  if (!transcriberPromise) {
+    transcriberPromise = import('@huggingface/transformers').then(async ({ env, pipeline }) => {
+      env.allowLocalModels = false;
+      return pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+        device: 'wasm',
+        dtype: 'q8',
+        progress_callback: progressCallback
+      });
+    }).catch((error) => {
+      transcriberPromise = null;
+      throw error;
+    });
+  }
+  return transcriberPromise;
+}
 
 function App() {
   const videoRef = useRef(null);
@@ -189,7 +207,7 @@ function App() {
 
   function createReadingScript() {
     const cleanText = transcript.replace(/\s+/g, ' ').trim();
-    if (cleanText.length < 30) return setToast('Pega una transcripción o un resumen más completo.');
+    if (cleanText.length < 30) return setToast('Primero crea la transcripción automática del vídeo.');
     const sentences = cleanText.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((value) => value.trim()).filter((value) => value.length > 20) || [];
     if (!sentences.length) return setToast('No se han encontrado frases suficientes para crear el guion.');
     const blockCount = Math.max(2, Math.min(6, Math.round(Number(speechDuration) / 7)));
@@ -221,6 +239,56 @@ function App() {
     const closing = 'En conclusión, el vídeo plantea cuestiones interesantes, pero lo mejor es analizar cada afirmación, comprobar sus fuentes y formar nuestra propia opinión. Déjame en los comentarios qué piensas tú.';
     setGeneratedScript(`INTRODUCCIÓN\n${opening}\n\n${blocks.join('\n\n')}\n\nCONCLUSIÓN\n${closing}`);
     setToast('Guion creado. Puedes editarlo antes de grabarte.');
+  }
+
+  async function createAutomaticTranscript() {
+    if (!source) return setToast('Primero sube un vídeo.');
+    setWorking(true); setProgress(0); setExportError('');
+    try {
+      await ensureFfmpeg();
+      exportStageRef.current = 'extracción del audio para la transcripción';
+      setStatus('Extrayendo la voz del vídeo…');
+      const input = await writeInput(source, '-transcript');
+      const audioName = `transcript-${source.id}.f32`;
+      try { await ffmpeg.deleteFile(audioName); } catch { /* todavía no existe */ }
+      const audioResult = await ffmpeg.exec([
+        '-y', '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-f', 'f32le', audioName
+      ]);
+      if (audioResult !== 0) throw new Error('No se pudo extraer la pista de voz del vídeo.');
+      const audioBytes = await ffmpeg.readFile(audioName);
+      const audioBuffer = audioBytes.buffer.slice(audioBytes.byteOffset, audioBytes.byteOffset + audioBytes.byteLength);
+      const audio = new Float32Array(audioBuffer);
+
+      setProgress(5);
+      setStatus('Cargando el modelo de transcripción local…');
+      const transcriber = await loadTranscriber((event) => {
+        if (event?.status === 'progress' && Number.isFinite(event.progress)) {
+          setProgress(Math.max(5, Math.min(70, Math.round(5 + event.progress * 0.65))));
+        }
+      });
+      setProgress(75);
+      setStatus('Escuchando y transcribiendo el vídeo…');
+      const result = await transcriber(audio, {
+        language: 'spanish',
+        task: 'transcribe',
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: false
+      });
+      const text = String(result?.text || '').replace(/\s+/g, ' ').trim();
+      if (text.length < 10) throw new Error('No se ha detectado voz clara en el vídeo.');
+      setTranscript(text);
+      setGeneratedScript('');
+      setProgress(100);
+      setToast('Transcripción creada automáticamente. Ya puedes crear tu guion.');
+      await ffmpeg.deleteFile(audioName);
+    } catch (error) {
+      console.error(error);
+      setExportError(`Fallo durante la transcripción automática: ${error?.message || String(error)}`);
+      setToast('No se pudo completar la transcripción. Consulta el detalle del error.');
+    } finally {
+      setWorking(false); setStatus(''); setProgress(0);
+    }
   }
 
   async function copyReadingScript() {
@@ -556,7 +624,7 @@ function App() {
 
           {!!timeline.length && <section className="export-options">
             <div className="option-block"><h3>Formato final</h3><p>Elige dónde vas a publicar el vídeo.</p><div className="format-grid">{Object.entries(OUTPUT_FORMATS).map(([key, format]) => <button key={key} className={outputFormat === key ? 'selected' : ''} onClick={() => setOutputFormat(key)}><strong>{format.label}</strong><small>{format.detail}</small></button>)}</div></div>
-            <div className="option-block script-block"><div className="script-heading"><div><h3>Crear mi guion</h3><p>Pega la transcripción o un resumen. Todo se procesa en tu navegador, sin API.</p></div><span>Sin API</span></div><textarea className="transcript-input" placeholder="Pega aquí lo que se dice en el vídeo…" value={transcript} onChange={(e) => setTranscript(e.target.value)}/><div className="script-controls"><label>Estilo<select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)}><option value="informativo">Informativo</option><option value="critico">Crítico</option><option value="sencillo">Explicación sencilla</option><option value="contundente">Contundente</option><option value="divertido">Divertido</option></select></label><label>Duración por intervención<select value={speechDuration} onChange={(e) => setSpeechDuration(Number(e.target.value))}><option value="10">10 segundos</option><option value="20">20 segundos</option><option value="30">30 segundos</option></select></label><button className="primary-button" onClick={createReadingScript}><WandSparkles size={16}/> Crear texto para leer</button></div>{generatedScript && <div className="generated-script"><div><strong>Texto que debes leer</strong><button className="text-button" onClick={copyReadingScript}>Copiar guion</button></div><textarea value={generatedScript} onChange={(e) => setGeneratedScript(e.target.value)}/><small>Puedes modificar cualquier frase antes de grabar tus vídeos.</small></div>}</div>
+            <div className="option-block script-block"><div className="script-heading"><div><h3>Crear mi guion</h3><p>La aplicación escucha el vídeo y obtiene automáticamente lo que se dice, sin API.</p></div><span>Automático</span></div><button className="secondary-button full transcribe-button" onClick={createAutomaticTranscript} disabled={working}><AudioLines size={17}/> {transcript ? 'Volver a crear la transcripción' : 'Crear transcripción automática'}</button><p className="model-note">La primera vez descargará el modelo local y puede tardar unos minutos.</p>{transcript && <><label className="transcript-label">Transcripción obtenida automáticamente</label><textarea className="transcript-input" value={transcript} onChange={(e) => setTranscript(e.target.value)}/><div className="script-controls"><label>Estilo<select value={scriptStyle} onChange={(e) => setScriptStyle(e.target.value)}><option value="informativo">Informativo</option><option value="critico">Crítico</option><option value="sencillo">Explicación sencilla</option><option value="contundente">Contundente</option><option value="divertido">Divertido</option></select></label><label>Duración por intervención<select value={speechDuration} onChange={(e) => setSpeechDuration(Number(e.target.value))}><option value="10">10 segundos</option><option value="20">20 segundos</option><option value="30">30 segundos</option></select></label><button className="primary-button" onClick={createReadingScript}><WandSparkles size={16}/> Crear texto para leer</button></div></>}{generatedScript && <div className="generated-script"><div><strong>Texto que debes leer</strong><button className="text-button" onClick={copyReadingScript}>Copiar guion</button></div><textarea value={generatedScript} onChange={(e) => setGeneratedScript(e.target.value)}/><small>Puedes modificar cualquier frase antes de grabar tus vídeos.</small></div>}</div>
           </section>}
 
           <div className="export-row"><div><h3>Exportación MP4 · {OUTPUT_FORMATS[outputFormat].label}</h3><p>La primera preparación puede tardar un poco. Mantén esta pestaña abierta.</p></div><button className="primary-button export" onClick={exportTimeline} disabled={!timeline.length || working}>{working ? <LoaderCircle className="spin" size={18}/> : <Download size={18}/>} Generar y descargar vídeo</button></div>
