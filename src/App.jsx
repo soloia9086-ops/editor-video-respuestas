@@ -9,6 +9,7 @@ import {
 import { fileExtension, formatTime, safeName, uid } from './utils';
 
 const CUT_OPTIONS = [1, 3, 5, 8, 10];
+const MAX_SOURCE_DURATION = 10 * 60;
 const OUTPUT_FORMATS = {
   youtube: { label: 'Horizontal 16:9', detail: 'YouTube', width: 1280, height: 720 },
   vertical: { label: 'Vertical 9:16', detail: 'TikTok, Reels y Shorts', width: 720, height: 1280 },
@@ -127,6 +128,20 @@ function App() {
 
   function onMetadata() {
     const value = videoRef.current?.duration || 0;
+    if (value > MAX_SOURCE_DURATION) {
+      if (source?.url) URL.revokeObjectURL(source.url);
+      setSource(null);
+      setClips([]);
+      setTimeline([]);
+      setImpactMoments([]);
+      setDuration(0);
+      setMarkIn(0);
+      setMarkOut(0);
+      setTranscript('');
+      setGeneratedScript('');
+      setToast('El vídeo supera el máximo permitido de 10 minutos. Selecciona un archivo más corto.');
+      return;
+    }
     setDuration(value);
     setMarkOut(Math.min(value, cutSize));
   }
@@ -676,7 +691,7 @@ function App() {
             <input type="file" accept="video/*" onChange={onSourceSelected} />
             <span className="upload-circle"><Upload size={34}/></span>
             <h2>Sube el vídeo que quieres analizar</h2>
-            <p>MP4, MOV o WebM · Recomendado: 1080p o inferior</p>
+            <p>MP4, MOV o WebM · Máximo 10 minutos · Recomendado: 1080p o inferior</p>
             <span className="primary-button">Seleccionar vídeo</span>
             <small>El archivo permanece en tu dispositivo</small>
           </label>
